@@ -23,6 +23,58 @@ interface FileContent {
   blob?: string;
 }
 
+function truncateBase64Content(text: string): string {
+  if (!text) return text;
+
+  // Regex to find base64 image data in markdown or other formats
+  // This pattern looks for common base64 data patterns like:
+  // 1. <data:image/png;base64,...> format
+  // 2. base64,... format in various contexts
+  const base64Patterns = [
+    // Match markdown image links with base64 data
+    /\[.*?\]: <(data:image\/[^;]+;base64,[A-Za-z0-9+/=]{50,})>/g,
+    // Match HTML/XML img tags with base64 src
+    /<img[^>]*src="(data:image\/[^;]+;base64,[A-Za-z0-9+/=]{50,})"[^>]*>/g,
+    // Match general base64 data URIs
+    /(data:image\/[^;]+;base64,[A-Za-z0-9+/=]{50,})/g,
+    // Match other potential base64 content (generic)
+    /(base64,[A-Za-z0-9+/=]{50,})/g
+  ];
+
+  let processedText = text;
+
+  // Replace each pattern with a truncated version
+  for (const pattern of base64Patterns) {
+    processedText = processedText.replace(pattern, (match, base64Part) => {
+      // Extract the mime type if present
+      const mimeMatch = base64Part.match(/data:(image\/[^;]+);/);
+      const mimeType = mimeMatch ? mimeMatch[1] : "binary data";
+
+      // For markdown image links
+      if (match.startsWith('[') && match.includes(']: <')) {
+        return match.replace(base64Part, `data:${mimeType};base64,[BASE64_DATA_TRUNCATED]`);
+      }
+
+      // For HTML img tags
+      if (match.startsWith('<img')) {
+        return match.replace(base64Part, `data:${mimeType};base64,[BASE64_DATA_TRUNCATED]`);
+      }
+
+      // For other formats
+      return base64Part.substring(0, 20) + "[BASE64_DATA_TRUNCATED]";
+    });
+  }
+
+  return processedText;
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + " bytes";
+  else if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  else if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+  else return (bytes / (1024 * 1024 * 1024)).toFixed(1) + " GB";
+}
+
 export async function readFile(
   args: GDriveReadFileInput,
 ): Promise<InternalToolResponse> {
@@ -32,7 +84,9 @@ export async function readFile(
       content: [
         {
           type: "text",
-          text: `Contents of ${result.name}:\n\n${result.contents.text || result.contents.blob}`,
+          text: `Contents of ${result.name}:\n\n${result.contents.text ?
+            truncateBase64Content(result.contents.text) :
+            (result.contents.blob ? '[BINARY_DATA_TRUNCATED]' : 'No content available')}`,
         },
       ],
       isError: false,
@@ -88,6 +142,7 @@ if (file.data.mimeType?.startsWith("application/vnd.google-apps")) {
       exportMimeType = "text/plain";
   }
 
+
   // Export the Google Workspace file
   const res = await drive.files.export({
     fileId,
@@ -100,7 +155,7 @@ if (file.data.mimeType?.startsWith("application/vnd.google-apps")) {
     name: file.data.name || fileId,
     contents: {
       mimeType: exportMimeType,
-      text: res.data as string,
+      text: truncateBase64Content(res.data as string),
     },
   };
 }
@@ -123,8 +178,8 @@ return {
   contents: {
     mimeType,
     ...(isText
-      ? { text: content.toString("utf-8") }
-      : { blob: content.toString("base64") }),
+      ? { text: truncateBase64Content(content.toString("utf-8")) }
+      : { blob: `[BINARY_DATA_TRUNCATED - ${formatFileSize(content.length)}]` }),
   },
 };
 }
