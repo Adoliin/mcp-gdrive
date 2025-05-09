@@ -13,25 +13,44 @@ export const schema = {
         required: ["fileId"],
     },
 };
-const drive = google.drive("v3");
 export async function readFile(args) {
-    const result = await readGoogleDriveFile(args.fileId);
-    return {
-        content: [
-            {
-                type: "text",
-                text: `Contents of ${result.name}:\n\n${result.contents.text || result.contents.blob}`,
-            },
-        ],
-        isError: false,
-    };
+    try {
+        const result = await readGoogleDriveFile(args.fileId);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: `Contents of ${result.name}:\n\n${result.contents.text || result.contents.blob}`,
+                },
+            ],
+            isError: false,
+        };
+    }
+    catch (error) {
+        console.error(`Error reading file ${args.fileId}:`, error);
+        return {
+            content: [
+                {
+                    type: "text",
+                    text: `Error reading file: ${error.message}`,
+                },
+            ],
+            isError: true,
+        };
+    }
 }
 async function readGoogleDriveFile(fileId) {
+    // Initialize the drive client inside the function
+    // This ensures it uses the current authentication context
+    const drive = google.drive("v3");
     // First get file metadata to check mime type
+    // Adding parameters to support service account access to shared drives
     const file = await drive.files.get({
         fileId,
-        fields: "mimeType,name",
+        fields: "mimeType,name,parents,driveId",
+        supportsAllDrives: true
     });
+    console.log(`File metadata for ${fileId}:`, JSON.stringify(file.data, null, 2));
     // For Google Docs/Sheets/etc we need to export
     if (file.data.mimeType?.startsWith("application/vnd.google-apps")) {
         let exportMimeType;
@@ -51,7 +70,13 @@ async function readGoogleDriveFile(fileId) {
             default:
                 exportMimeType = "text/plain";
         }
-        const res = await drive.files.export({ fileId, mimeType: exportMimeType }, { responseType: "text" });
+        // Export the Google Workspace file
+        const res = await drive.files.export({
+            fileId,
+            mimeType: exportMimeType,
+        }, {
+            responseType: "text"
+        });
         return {
             name: file.data.name || fileId,
             contents: {
@@ -61,7 +86,13 @@ async function readGoogleDriveFile(fileId) {
         };
     }
     // For regular files download content
-    const res = await drive.files.get({ fileId, alt: "media" }, { responseType: "arraybuffer" });
+    const res = await drive.files.get({
+        fileId,
+        alt: "media",
+        supportsAllDrives: true,
+    }, {
+        responseType: "arraybuffer"
+    });
     const mimeType = file.data.mimeType || "application/octet-stream";
     const isText = mimeType.startsWith("text/") || mimeType === "application/json";
     const content = Buffer.from(res.data);

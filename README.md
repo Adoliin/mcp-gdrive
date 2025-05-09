@@ -77,13 +77,32 @@ Make sure to build the server with either `npm run build` or `npm run watch`.
 
 ### Authentication
 
-Next you will need to run `node ./dist/index.js` to trigger the authentication step
+The server supports two authentication methods:
 
-You will be prompted to authenticate with your browser. You must authenticate with an account in the same organization as your Google Cloud project.
+#### 1. OAuth Authentication (Default)
 
-Your OAuth token is saved in the directory specified by the `GDRIVE_CREDS_DIR` environment variable.
+This method requires user interaction to authenticate:
+
+1. Run `node ./dist/index.js` to trigger the authentication step
+2. You will be prompted to authenticate with your browser
+3. You must authenticate with an account in the same organization as your Google Cloud project
+4. Your OAuth token is saved in the directory specified by the `GDRIVE_CREDS_DIR` environment variable
 
 ![Authentication Prompt](https://i.imgur.com/TbyV6Yq.png)
+
+#### 2. Service Account Authentication
+
+For automated or headless environments, you can use a service account instead:
+
+1. [Create a service account](https://console.cloud.google.com/iam-admin/serviceaccounts) in your Google Cloud project
+2. Grant the service account appropriate permissions to access the Google Drive resources you need
+3. Create a key for the service account and download it as JSON
+4. Rename the file to `service-account.json` and place it in the directory specified by `GDRIVE_CREDS_DIR`
+5. Optional: Set the environment variable `USE_SERVICE_ACCOUNT=true` to force service account authentication
+
+The service account method doesn't require user interaction and is ideal for automated systems or server environments.
+
+**Note**: To use service account authentication with shared Google Drive files, you must share the files with the service account's email address.
 
 ### Usage with Desktop App
 
@@ -96,9 +115,14 @@ To integrate this server with the desktop app, add the following to your app's s
       "command": "npx",
       "args": ["-y", "@isaacphi/mcp-gdrive"],
       "env": {
+        // For OAuth authentication
         "CLIENT_ID": "<CLIENT_ID>",
         "CLIENT_SECRET": "<CLIENT_SECRET>",
-        "GDRIVE_CREDS_DIR": "/path/to/config/directory"
+        "GDRIVE_CREDS_DIR": "/path/to/config/directory",
+
+        // For service account authentication
+        "USE_SERVICE_ACCOUNT": "true",
+        "GDRIVE_SERVICE_ACCOUNT_PATH": "/path/to/service-account.json" // Optional, defaults to GDRIVE_CREDS_DIR/service-account.json
       }
     }
   }

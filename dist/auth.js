@@ -6,9 +6,18 @@ export const SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
 ];
+// Authentication types
+export var AuthType;
+(function (AuthType) {
+    AuthType["OAUTH"] = "oauth";
+    AuthType["SERVICE_ACCOUNT"] = "service_account";
+})(AuthType || (AuthType = {}));
 // Get credentials directory from environment variable or use default
 const CREDS_DIR = process.env.GDRIVE_CREDS_DIR ||
     path.join(path.dirname(new URL(import.meta.url).pathname), "../../../");
+// Service account file path
+const serviceAccountPath = process.env.GDRIVE_SERVICE_ACCOUNT_PATH ||
+    path.join(CREDS_DIR, "service-account.json");
 // Ensure the credentials directory exists
 function ensureCredsDirectory() {
     try {
@@ -20,7 +29,8 @@ function ensureCredsDirectory() {
         throw error;
     }
 }
-const credentialsPath = path.join(CREDS_DIR, ".gdrive-server-credentials.json");
+// Path for OAuth credentials
+const oauthCredentialsPath = path.join(CREDS_DIR, ".gdrive-server-credentials.json");
 async function authenticateWithTimeout(keyfilePath, SCOPES, timeoutMs = 30000) {
     const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Authentication timed out")), timeoutMs));
     const authPromise = authenticate({
@@ -37,7 +47,7 @@ async function authenticateWithTimeout(keyfilePath, SCOPES, timeoutMs = 30000) {
 }
 async function authenticateAndSaveCredentials() {
     console.error("Launching auth flow…");
-    console.error("Using credentials path:", credentialsPath);
+    console.error("Using credentials path:", oauthCredentialsPath);
     const keyfilePath = path.join(CREDS_DIR, "gcp-oauth.keys.json");
     console.error("Using keyfile path:", keyfilePath);
     const auth = await authenticateWithTimeout(keyfilePath, SCOPES);
@@ -50,8 +60,8 @@ async function authenticateAndSaveCredentials() {
         console.error("Received new credentials with scopes:", credentials.scope);
         // Ensure directory exists before saving
         ensureCredsDirectory();
-        fs.writeFileSync(credentialsPath, JSON.stringify(credentials, null, 2));
-        console.error("Credentials saved successfully with refresh token to:", credentialsPath);
+        fs.writeFileSync(oauthCredentialsPath, JSON.stringify(credentials, null, 2));
+        console.error("Credentials saved successfully with refresh token to:", oauthCredentialsPath);
         auth.setCredentials(credentials);
         return auth;
     }
@@ -60,17 +70,50 @@ async function authenticateAndSaveCredentials() {
         return auth;
     }
 }
-// Try to load credentials without prompting for auth
-export async function loadCredentialsQuietly() {
-    console.error("Attempting to load credentials from:", credentialsPath);
-    const oauth2Client = new google.auth.OAuth2(process.env.CLIENT_ID, process.env.CLIENT_SECRET);
-    if (!fs.existsSync(credentialsPath)) {
-        console.error("No credentials file found");
+// Determine which authentication method to use
+export function getAuthType() {
+    // Use service account if explicitly set in environment variable
+    if (process.env.USE_SERVICE_ACCOUNT === "true") {
+        return AuthType.SERVICE_ACCOUNT;
+    }
+    // Use service account if the file exists and no OAuth credentials exist
+    if (fs.existsSync(serviceAccountPath) && !fs.existsSync(oauthCredentialsPath)) {
+        return AuthType.SERVICE_ACCOUNT;
+    }
+    // Default to OAuth
+    return AuthType.OAUTH;
+}
+// Authenticate with service account
+export async function authenticateWithServiceAccount() {
+    console.error("Authenticating with service account from:", serviceAccountPath);
+    if (!fs.existsSync(serviceAccountPath)) {
+        console.error("Service account file not found at:", serviceAccountPath);
         return null;
     }
     try {
-        const savedCreds = JSON.parse(fs.readFileSync(credentialsPath, "utf-8"));
-        console.error("Loaded existing credentials with scopes:", savedCreds.scope);
+        const auth = new google.auth.GoogleAuth({
+            keyFile: serviceAccountPath,
+            scopes: SCOPES,
+        });
+        console.error("Service account authentication successful");
+        return auth;
+    }
+    catch (error) {
+        console.error("Error authenticating with service account:", error);
+        return null;
+    }
+}
+// Try to load OAuth credentials without prompting for auth
+export async function loadOAuthCredentialsQuietly() {
+    console.error("Attempting to load OAuth credentials from:", oauthCredentialsPath);
+    const oauth2Client = new google.auth.OAuth2(process.env.CLIENT_ID, process.env.CLIENT_SECRET);
+    if (!fs.existsSync(oauthCredentialsPath)) {
+        console.error("No OAuth credentials file found");
+        return null;
+    }
+    try {
+        const savedCreds = JSON.parse(fs.readFileSync(oauthCredentialsPath, "utf-8"));
+        console.error("Loaded existing OAuth credentials with scopes:", savedCreds.scope);
         oauth2Client.setCredentials(savedCreds);
         const expiryDate = new Date(savedCreds.expiry_date);
         const now = new Date();
@@ -87,7 +130,7 @@ export async function loadCredentialsQuietly() {
                 const response = await oauth2Client.refreshAccessToken();
                 const newCreds = response.credentials;
                 ensureCredsDirectory();
-                fs.writeFileSync(credentialsPath, JSON.stringify(newCreds, null, 2));
+                fs.writeFileSync(oauthCredentialsPath, JSON.stringify(newCreds, null, 2));
                 oauth2Client.setCredentials(newCreds);
                 console.error("Token refreshed and saved successfully");
             }
@@ -99,18 +142,36 @@ export async function loadCredentialsQuietly() {
         return oauth2Client;
     }
     catch (error) {
-        console.error("Error loading credentials:", error);
+        console.error("Error loading OAuth credentials:", error);
         return null;
+    }
+}
+// Try to load credentials based on the configured auth type
+export async function loadCredentialsQuietly() {
+    const authType = getAuthType();
+    console.error(`Using auth type: ${authType}`);
+    if (authType === AuthType.SERVICE_ACCOUNT) {
+        return await authenticateWithServiceAccount();
+    }
+    else {
+        return await loadOAuthCredentialsQuietly();
     }
 }
 // Get valid credentials, prompting for auth if necessary
 export async function getValidCredentials(forceAuth = false) {
+    // First try to load credentials silently
     if (!forceAuth) {
         const quietAuth = await loadCredentialsQuietly();
         if (quietAuth) {
             return quietAuth;
         }
     }
+    // If we're using service account authentication, try again to authenticate
+    if (getAuthType() === AuthType.SERVICE_ACCOUNT) {
+        console.error("Retrying service account authentication");
+        return await authenticateWithServiceAccount();
+    }
+    // Fall back to OAuth user authentication
     return await authenticateAndSaveCredentials();
 }
 // Background refresh that never prompts for auth
